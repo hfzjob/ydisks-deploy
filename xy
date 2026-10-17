@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+D="/opt/ydisks-deploy"
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "请使用 root 执行：sudo xy" >&2; exit 1; }
+[[ -f "$D/.env" && -f "$D/docker-compose.yml" ]] || { echo "未找到部署文件，请先重新运行一键安装脚本。" >&2; exit 1; }
+
+val() {
+  local key="$1"
+  sed -n "s/^${key}=//p" "$D/.env" | head -n1
+}
+dc() { docker compose --env-file "$D/.env" --project-directory "$D" -f "$D/docker-compose.yml" "$@"; }
+get_public_ipv4() {
+  local ip
+  ip="$(val PUBLIC_IPV4)"
+  if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && python3 -c 'import ipaddress,sys; a=ipaddress.ip_address(sys.argv[1]);sys.exit(0 if a.version==4 and a.is_global else 1)' "$ip" 2>/dev/null; then
+    printf '%s' "$ip"; return 0
+  fi
+  for endpoint in https://api.ipify.org https://ipv4.icanhazip.com; do
+    ip="$(curl -4fsS --connect-timeout 4 --max-time 8 "$endpoint" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && python3 -c 'import ipaddress,sys; a=ipaddress.ip_address(sys.argv[1]);sys.exit(0 if a.version==4 and a.is_global else 1)' "$ip" 2>/dev/null; then
+      printf '%s' "$ip"; return 0
+    fi
+  done
+  return 1
+}
+
+show_info() {
+  local ip port admin app_image db_image health
+  ip="$(get_public_ipv4 || true)"
+  port="$(val XIANYU_HTTP_PORT)"; port="${port:-59188}"
+  admin="$(val XIANYU_ADMIN_PASSWORD)"
+  app_image="$(val XIANYU_IMAGE)"
+  db_image="$(val POSTGRES_IMAGE)"
+  printf '\n========== Ydisks 访问信息 ==========\n'
+  if [[ -n "$ip" ]]; then
+    printf '访问网址：       http://%s:%s\n' "$ip" "$port"
+  else
+    printf '访问网址：       http://<你的公网IPv4>:%s\n' "$port"
+    echo '公网 IPv4 未能自动探测，请查看 VPS 服务商控制台。'
+  fi
+  printf '管理员用户名：   admin\n'
+  printf '管理员密码：     %s\n' "${admin:-未配置}"
+  printf '宿主绑定：       0.0.0.0:%s（IPv4）\n' "$port"
+  printf 'IPv6 端口映射：  无\n'
+  printf '访问协议：       HTTP（未配置 HTTPS 证书）\n'
+  printf '应用镜像：       %s\n' "${app_image:-未配置}"
+  printf '数据库镜像：     %s\n' "${db_image:-未配置}"
+  printf '\n--- Compose 状态 ---\n'
+  dc ps || true
+  if curl -4fsS --connect-timeout 2 --max-time 4 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    echo '本机健康检查：通过'
+  else
+    echo '本机健康检查：未通过（可选菜单 0 查看日志）'
+  fi
+  printf '\n注意：XIANYU_DATA_KEY 和数据库数据密钥必须长期保存，不能随意更改。HTTP 登录不加密，不要在不可信网络中输入密码。\n'
+}
+
+restart_service() {
+  cat <<'WARN'
+警告：原项目文档提醒，频繁重启可能导致闲鱼重新申请登录凭证并触发账号风控。
+只有确实需要重启时才继续。
+WARN
+  read -r -p '输入 RESTART 确认重启全部 Compose 服务：' confirm || true
+  [[ "${confirm:-}" == RESTART ]] || { echo '已取消。'; return; }
+  dc restart
+  echo '重启命令已执行。当前状态：'
+  dc ps
+}
+
+while true; do
+  printf '\n========== Ydisks 快捷管理 xy ==========\n'
+  printf '① 查看网址访问信息、账号密码\n'
+  printf '② 重启服务\n'
+  printf '③ 卸载服务\n'
+  printf '④ 更新服务（先备份数据库）\n'
+  printf '0) 查看最近日志\n'
+  printf 'q) 退出\n'
+  read -r -p '请选择：' choice || exit 0
+  case "$choice" in
+    1|①) show_info ;;
+    2|②) restart_service ;;
+    3|③) exec "$D/uninstall.sh" ;;
+    4|④) "$D/update.sh" ;;
+    0) dc logs --tail=120 ;;
+    q|Q) exit 0 ;;
+    *) echo '无效选项，请输入 1、2、3、4、0 或 q。' ;;
+  esac
+done
