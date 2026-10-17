@@ -48,6 +48,7 @@ install_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     info "已检测到 Docker 与 Compose v2，跳过 Docker 安装。"
     systemctl enable --now docker >/dev/null 2>&1 || true
+    docker info >/dev/null 2>&1 || die "已检测到 Docker 与 Compose v2，但 Docker 守护进程不可用。请检查：systemctl status docker"
     return
   fi
 
@@ -148,13 +149,26 @@ for f in docker-compose.yml xy update.sh uninstall.sh; do mv -f "${APP_DIR}/${f}
 chmod 0750 "$APP_DIR/xy" "$APP_DIR/update.sh" "$APP_DIR/uninstall.sh"
 
 ask_port() {
-  local default_port="$1" answer
-  printf 'Web 访问端口 [1024-65535，默认 %s]：' "$default_port"
+  local default_port="$1"
+  local answer port
+
+  # 提示文字写入标准错误，不能混入 PORT 的返回值
+  printf 'Web 访问端口 [1024-65535，默认 %s]：' "$default_port" >&2
+
   read -r answer || answer="$default_port"
   answer="${answer:-$default_port}"
-  [[ "$answer" =~ ^[0-9]+$ ]] || die "端口必须为数字。"
-  (( answer >= 1024 && answer <= 65535 )) || die "端口范围必须为 1024-65535。"
-  printf '%s' "$answer"
+
+  # 只允许 1-5 位十进制数字
+  [[ "$answer" =~ ^[0-9]{1,5}$ ]] || die "端口必须是 1024-65535 范围内的数字。"
+
+  # 强制按十进制解析，避免 08080 被 Bash 当作八进制
+  port=$((10#$answer))
+
+  (( port >= 1024 && port <= 65535 )) ||
+    die "端口范围必须为 1024-65535。"
+
+  # 标准输出只返回纯数字
+  printf '%s' "$port"
 }
 
 set_env() {
@@ -171,6 +185,14 @@ val_env() { local key="$1"; [[ -f "$APP_DIR/.env" ]] && sed -n "s/^${key}=//p" "
 
 DEFAULT_PORT="$(val_env XIANYU_HTTP_PORT)"
 DEFAULT_PORT="${DEFAULT_PORT:-59188}"
+
+# 兼容上次安装留下的错误端口值
+if [[ ! "$DEFAULT_PORT" =~ ^[0-9]{1,5}$ ]] ||
+   (( 10#$DEFAULT_PORT < 1024 || 10#$DEFAULT_PORT > 65535 )); then
+  warn "现有 .env 中的 XIANYU_HTTP_PORT 无效，将回退到默认端口 59188。"
+  DEFAULT_PORT=59188
+fi
+
 PORT="$(ask_port "$DEFAULT_PORT")"
 # Force IPv4 host binding even if an old .env contained 127.0.0.1 or an IPv6 address.
 if [[ ! -f "$APP_DIR/.env" ]]; then
@@ -257,7 +279,8 @@ for endpoint in https://api.ipify.org https://ipv4.icanhazip.com; do
     PUBLIC_IPV4="$candidate"; break
   fi
 done
-if [[ -n "$PUBLIC_IPV4" ]]; then set_env PUBLIC_IPV4 "$PUBLIC_IPV4"; fi
+# 即使本次探测失败也清空旧地址，避免 xy 显示已过期的公网 IPv4。
+set_env PUBLIC_IPV4 "$PUBLIC_IPV4"
 
 DC=(docker compose --env-file "$APP_DIR/.env" --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.yml")
 "${DC[@]}" config -q || die "Compose 配置验证失败，请检查 ${APP_DIR}/.env。"
