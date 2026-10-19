@@ -5,11 +5,18 @@ Ydisks-Xianyu-Helper 的 Docker Compose 一键部署脚本，面向 Debian / Ubu
 ## 一键安装
 
 以 root 执行：
-
+国外
 ```bash
 curl -4fsSL https://raw.githubusercontent.com/hfzjob/ydisks-deploy/main/install.sh -o /tmp/ydisks-install.sh && bash /tmp/ydisks-install.sh
 ```
-
+大陆
+```
+curl -4fL --connect-timeout 10 --max-time 60 \
+  'https://gitee.com/hfzjob/ydisks-deploy/raw/master/install.sh' \
+  -o /tmp/ydisks-install.sh \
+&& bash -n /tmp/ydisks-install.sh \
+&& bash /tmp/ydisks-install.sh
+```
 首次安装会询问服务器类型：
 
 1. **中国大陆**：优先尝试阿里云 Docker CE 软件源以及国内 GHCR / Docker Hub 镜像代理；镜像站不可用时会自动尝试后备来源。
